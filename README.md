@@ -9,7 +9,7 @@ This project implements a Generative Adversarial Network (GAN) framework to reco
 - **Multi-Loss Optimization**: Combines adversarial, perceptual, and pixel-wise losses for superior image quality.
 - **Evaluation Metrics**: Uses PSNR, SSIM, and LPIPS to assess reconstruction performance.
 - **Dataset Support**: Seamlessly processes the LoDoPaB-CT dataset.
-- 
+
 ## Dataset
 This project utilizes the [LoDoPaB-CT Dataset](https://zenodo.org/records/3384092), which provides paired low-dose and normal-dose CT images. The dataset is licensed under the Creative Commons Attribution 4.0 International License.
 
@@ -40,12 +40,12 @@ Run the main script to start training:
 ```bash
 python src/main.py
 ```
-###
-Edit src/main.py to adjust:
-- BASE_PATH: Path to the dataset
-- batch_size: Training batch size (default: 12)
-- epochs: Number of training epochs (default: 5)
-- Learning rates and optimizer hyperparameters
+### Configuration
+Modify the following parameters in `src/main.py` as needed:
+- `BASE_PATH`: Path to the dataset
+- `batch_size`: Training batch size (default: 12)
+- `epochs`: Number of training epochs (default: 5)
+- Learning rates and other hyperparameters in the optimizer setup
 
 ### Project Structure
 ```bash
@@ -66,6 +66,7 @@ ULowDoseGAN/
 ```
 
 ### Requirements
+Please take a look at the `requirements.txt` for the full list of dependencies. Key requirements include:
 - torch
 - torchvision
 - numpy
