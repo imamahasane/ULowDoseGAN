@@ -3,7 +3,7 @@ import torch
 
 from src.metrics.image import psnr, ssim_torch
 from src.metrics.stats import bootstrap_ci, bootstrap_ci_diff, wilcoxon_signed_rank
-from src.metrics.uncertainty import coverage_and_ece, mean_and_std, pearson_r
+from src.metrics.uncertainty import coverage_and_ece, error_gap, mean_and_std, pearson_r
 
 
 def test_psnr_identical_is_infinite():
@@ -55,7 +55,23 @@ def test_coverage_and_ece_reasonable_range():
     sigma = err + 0.01  # sigma tracks error well -> should calibrate reasonably
     result = coverage_and_ece(err, sigma)
     assert 0.0 <= result.coverage95 <= 1.0
-    assert result.ece >= 0.0
+    assert result.cal_err >= 0.0
+
+
+def test_error_gap_positive_when_sigma_tracks_error():
+    torch.manual_seed(0)
+    err = torch.rand(1000) * 0.1
+    sigma = err + 0.01  # sigma tracks error well -> high-sigma pixels should have higher error
+    gap = error_gap(err, sigma)
+    assert gap > 0.0
+
+
+def test_error_gap_near_zero_when_sigma_uninformative():
+    torch.manual_seed(0)
+    err = torch.rand(2000) * 0.1
+    sigma = torch.rand(2000) * 0.1  # independent of error -> gap should be small
+    gap = error_gap(err, sigma)
+    assert abs(gap) < 0.03
 
 
 def test_wilcoxon_matches_scipy_reference():

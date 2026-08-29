@@ -22,7 +22,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--proposed", type=str, required=True, help="evaluate.py output JSON for the proposed method")
     ap.add_argument("--baseline", type=str, required=True, help="evaluate.py output JSON for the comparison baseline (e.g. CoreDiff)")
-    ap.add_argument("--metric", type=str, default="psnr", choices=["psnr", "ssim", "sinogram_l2", "sinogram_rmse"])
+    ap.add_argument("--metric", type=str, default="psnr", choices=["psnr", "ssim", "sinogram_l2", "sinogram_rmse", "sinogram_relative"])
     ap.add_argument("--n_boot", type=int, default=10000)
     ap.add_argument("--out_json", type=str, required=True)
     args = ap.parse_args()

@@ -24,6 +24,12 @@ class MayoAAPMDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         d = np.load(self.files[idx])
-        x = torch.from_numpy(d["x"]).float()  # (1,H,W)
-        y = torch.from_numpy(d["y"]).float()  # (angles,det)
-        return {"x": x, "y": y}
+        x = torch.from_numpy(d["x"]).float()  # (1,H,W), normalized to [-1,1]
+        y = torch.from_numpy(d["y"]).float()  # (angles,det), physical attenuation units
+        # Per-slice physical-attenuation range the [-1,1] image was normalized
+        # from, saved by scripts/prepare_mayo_aapm.py; required to invert that
+        # normalization for the physics-consistency loss (src/ct/units.py),
+        # since y was forward-projected from the pre-normalization image.
+        x_min = torch.tensor(float(d["x_min"]))
+        x_max = torch.tensor(float(d["x_max"]))
+        return {"x": x, "y": y, "x_min": x_min, "x_max": x_max}

@@ -1,7 +1,9 @@
-# Mayo-AAPM 2016 base config. Shared by all models via `--model`; see
-# lodopab.yaml for notes on the `loss:` section fields shared with this file.
+# PCDiff-Small on Mayo-AAPM 2016: see configs/lodopab_small.yaml for the
+# rationale (capacity-matched ablation, Table: capacity-matched ablation of
+# the physics-consistency loss). Identical to mayo_aapm.yaml except
+# base_channels: 128 -> 48.
 experiment:
-  name: mayo_pcdiff
+  name: mayo_pcdiff_small
   out_dir: runs/mayo_aapm
   seed: 1234
 
@@ -28,7 +30,7 @@ diffusion:
 model:
   in_channels: 2
   out_channels: 1
-  base_channels: 128
+  base_channels: 48   # only change vs. mayo_aapm.yaml -- capacity-matched to CoreDiff
   channel_mult: [1, 1, 2, 2, 4, 4]
   num_res_blocks: 2
   attention_resolutions: [16, 8]
@@ -38,11 +40,8 @@ model:
 
 loss:
   physics_weight: 1.0
-  # Scales L_diff (the eps-prediction denoising loss). 1.0 for the full model;
-  # scripts/run_ablation.py's "wo_denoising" variant sets this to 0.0.
   denoising_weight: 1.0
   perceptual:
-    # See lodopab.yaml -- D-004 resolved, same conclusion applies here.
     enabled: true
     weight: 0.1
     layers: ["relu2_2", "relu3_3"]

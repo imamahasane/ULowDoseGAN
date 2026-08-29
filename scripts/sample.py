@@ -24,9 +24,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=str, required=True)
     ap.add_argument("--model", type=str, required=True)
-    ap.add_argument("--ckpt", type=str, required=True)
+    ap.add_argument("--ckpt", type=str, default=None, help="Required for every model except 'fbp'.")
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--K", type=int, default=8)
+    ap.add_argument("--sampler", type=str, default="ddpm", choices=("ddpm", "dpm_solver"))
+    ap.add_argument("--dpm_solver_steps", type=int, default=20)
+    ap.add_argument("--eta", type=float, default=0.1, help="DPS step-size hyperparameter; ignored unless --model dps.")
     ap.add_argument("--out_dir", type=str, default="samples")
     ap.add_argument("--max_items", type=int, default=50)
     args = ap.parse_args()
@@ -50,9 +53,15 @@ def main():
         item = ds[idx]
         x_gt = item["x"].unsqueeze(0).to(device)
         y = item["y"].unsqueeze(0).to(device)
+        x_min = item["x_min"].unsqueeze(0).to(device)
+        x_max = item["x_max"].unsqueeze(0).to(device)
         c = projector.AT(y)
 
-        samples = reconstruct(model_name, model_obj, c, int(args.K), shape=(1, 1, int(H), int(W)))
+        samples = reconstruct(
+            model_name, model_obj, c, y, projector, int(args.K), shape=(1, 1, int(H), int(W)),
+            sampler=args.sampler, dpm_solver_steps=args.dpm_solver_steps, eta=args.eta,
+            x_min=x_min, x_max=x_max,
+        )
         mean, std = mean_and_std(samples)
 
         np.savez_compressed(

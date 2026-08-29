@@ -1,6 +1,16 @@
 #!/usr/bin/env python
-"""Build Mayo-AAPM train/val/test .npz splits: resize, normalize to [-1,1],
-forward-project, and inject Poisson low-dose noise at a given photon count.
+"""Build Mayo-AAPM train/val/test .npz splits: resize, forward-project (in
+physical attenuation units), inject Poisson low-dose noise at a given photon
+count, and separately normalize to [-1,1] for network I/O.
+
+Input convention: --input_dir slices (read_slice) are expected to already be
+in a physically-plausible attenuation-coefficient scale (roughly O(0.01-2)
+per pixel, so that a full-image line integral keeps exp(-line_integral) in a
+numerically sane range for add_poisson_noise_to_sinogram) -- e.g. normalized
+mu-map slices, not raw unmodified Hounsfield units (which can run to
+thousands and would silently saturate the Poisson simulation to a degenerate,
+all-minimum-intensity sinogram). Rescale your raw slices to that range before
+running this script if they are not already.
 
 --i0 and --angles are already exposed as CLI args, which is what makes the
 dose sweep (E-005) and projection-count sweep (E-006) tractable without new
@@ -45,11 +55,14 @@ def read_slice(path: Path) -> np.ndarray:
 def normalize_to_minus1_1(x: torch.Tensor) -> torch.Tensor:
     """Per-slice min/max rescale to [-1,1] (common in CT preprocessing when,
     unlike LoDoPaB, there's no dataset-wide fixed intensity convention to
-    rely on)."""
+    rely on). Returns the normalized image together with the x_min/x_max used,
+    so callers can invert the map later (src/ct/units.py) -- needed because
+    the physics-consistency loss and sinogram must live in the same physical
+    attenuation units as the pre-normalization image, not the [-1,1] domain."""
     x_min = x.amin(dim=(-2, -1), keepdim=True)
     x_max = x.amax(dim=(-2, -1), keepdim=True)
-    x = (x - x_min) / (x_max - x_min + 1e-8)
-    return x * 2.0 - 1.0
+    x_norm = (x - x_min) / (x_max - x_min + 1e-8)
+    return x_norm * 2.0 - 1.0, x_min, x_max
 
 
 def main():
@@ -94,15 +107,29 @@ def main():
     for split, flist in splits.items():
         for p in tqdm(flist, desc=f"prepare {split} (i0={args.i0}, angles={args.angles})"):
             img = read_slice(p)
-            x = torch.from_numpy(img)[None, None].to(device)
-            x = F.interpolate(x, size=(args.image_size, args.image_size), mode="bilinear", align_corners=False)
-            x = normalize_to_minus1_1(x)
+            x_phys = torch.from_numpy(img)[None, None].to(device)
+            x_phys = F.interpolate(x_phys, size=(args.image_size, args.image_size), mode="bilinear", align_corners=False)
 
-            y_clean = projector.A(x)
+            # Forward-project the PHYSICAL-attenuation-domain image (before
+            # [-1,1] normalization), so y and the physics-consistency loss
+            # (Sec. "Training objective") live in the same physical units the
+            # manuscript specifies -- normalizing first would forward-project
+            # a dimensionless [-1,1] image instead, which is not what
+            # x_hat0^phys = 0.5*(x_hat0+1)*(x_max-x_min)+x_min is designed to
+            # invert.
+            y_clean = projector.A(x_phys)
             y_ld = add_poisson_noise_to_sinogram(y_clean, i0=args.i0)
 
+            x_norm, x_min, x_max = normalize_to_minus1_1(x_phys)
+
             out_path = out_dir / split / f"{p.stem}.npz"
-            np.savez_compressed(out_path, x=x.detach().cpu().numpy(), y=y_ld.detach().cpu().numpy())
+            np.savez_compressed(
+                out_path,
+                x=x_norm.detach().cpu().numpy(),
+                y=y_ld.detach().cpu().numpy(),
+                x_min=x_min.detach().cpu().numpy().reshape(()),
+                x_max=x_max.detach().cpu().numpy().reshape(()),
+            )
 
 
 if __name__ == "__main__":

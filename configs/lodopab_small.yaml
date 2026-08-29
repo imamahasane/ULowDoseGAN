@@ -1,8 +1,14 @@
-# LoDoPaB-CT base config. Shared by all models via `--model`; the `model:`
-# section below is only consumed by the proposed method's UNet
-# (scripts/train.py's baseline branches build their own fixed architectures).
+# PCDiff-Small on LoDoPaB-CT: the capacity-matched ablation (Table:
+# capacity-matched ablation of the physics-consistency loss). Identical to
+# lodopab.yaml except base_channels: 128 -> 48 (all other hyperparameters,
+# including channel_mult/attention_resolutions/optimization, unchanged), which
+# gives ~17.15M trainable parameters -- comparable to CoreDiff's ~16.89M
+# (Table: computational cost and throughput). Train the paired
+# "Small w/o L_phys" row with the same config plus loss.physics_weight: 0.0
+# (e.g. `--config configs/lodopab_small.yaml` and override at the CLI, or
+# copy this file and set physics_weight: 0.0).
 experiment:
-  name: lodopab_pcdiff
+  name: lodopab_pcdiff_small
   out_dir: runs/lodopab
   seed: 1234
 
@@ -28,7 +34,7 @@ diffusion:
 model:
   in_channels: 2      # x_t concat c = A*(y)
   out_channels: 1
-  base_channels: 128
+  base_channels: 48   # only change vs. lodopab.yaml -- capacity-matched to CoreDiff
   channel_mult: [1, 1, 2, 2, 4, 4]
   num_res_blocks: 2
   attention_resolutions: [16, 8]
@@ -37,16 +43,9 @@ model:
   use_checkpoint: false
 
 loss:
-  # physics_weight = lambda, perceptual.weight = mu in the manuscript's
-  # L_diff + lambda*L_phys + mu*L_perc objective (Sec. "Training objective":
-  # "with lambda=1 and mu=0.1").
   physics_weight: 1.0
-  # Scales L_diff (the eps-prediction denoising loss). 1.0 for the full model;
-  # scripts/run_ablation.py's "wo_denoising" variant sets this to 0.0.
   denoising_weight: 1.0
   perceptual:
-    # Confirmed (DECISIONS.md D-004, resolved): enabled for the training run
-    # underlying the "Full Model" row in Table 1/Table 2.
     enabled: true
     weight: 0.1
     layers: ["relu2_2", "relu3_3"]

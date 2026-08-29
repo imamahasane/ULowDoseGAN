@@ -53,7 +53,7 @@ def test_sample_produces_finite_output():
 
 
 def test_p_sample_deterministic_at_t0():
-    
+
     ddpm = _make_ddpm()
     x_t = torch.randn(1, 1, 16, 16)
     c = torch.randn(1, 1, 16, 16)
@@ -61,3 +61,50 @@ def test_p_sample_deterministic_at_t0():
     out1 = ddpm.p_sample(x_t.clone(), c, t)
     out2 = ddpm.p_sample(x_t.clone(), c, t)
     assert torch.allclose(out1, out2)
+
+
+def test_dpm_solver_sample_produces_finite_output():
+    ddpm = _make_ddpm()
+    c = torch.randn(1, 1, 16, 16)
+    out = ddpm.dpm_solver_sample(c, shape=(1, 1, 16, 16), steps=4)
+    assert out.shape == (1, 1, 16, 16)
+    assert torch.isfinite(out).all()
+
+
+def test_dpm_solver_sample_deterministic():
+    # Algorithm 2 is explicitly deterministic (no injected noise); two runs
+    # from the same seed must match exactly.
+    torch.manual_seed(0)
+    ddpm = _make_ddpm()
+    c = torch.randn(1, 1, 16, 16)
+
+    torch.manual_seed(42)
+    out1 = ddpm.dpm_solver_sample(c, shape=(1, 1, 16, 16), steps=4)
+    torch.manual_seed(42)
+    out2 = ddpm.dpm_solver_sample(c, shape=(1, 1, 16, 16), steps=4)
+    assert torch.allclose(out1, out2)
+
+
+def test_dpm_solver_sample_single_step_matches_direct_x0_estimate():
+    # With steps=1, the only iteration runs at t=T-1 and, per Algorithm 2,
+    # returns the network's x0 estimate directly (t_0=0 branch).
+    ddpm = _make_ddpm()
+    torch.manual_seed(7)
+    x_T = torch.randn(1, 1, 16, 16)
+    c = torch.randn(1, 1, 16, 16)
+    t = torch.full((1,), 9, dtype=torch.long)  # T=10 -> last index is 9
+    expected = ddpm.predict_eps_and_x0(x_T, c, t).x0_pred
+
+    torch.manual_seed(7)
+    out = ddpm.dpm_solver_sample(c, shape=(1, 1, 16, 16), steps=1)
+    assert torch.allclose(out, expected, atol=1e-5)
+
+
+def test_dpm_solver_sample_rejects_nonpositive_steps():
+    ddpm = _make_ddpm()
+    c = torch.randn(1, 1, 16, 16)
+    try:
+        ddpm.dpm_solver_sample(c, shape=(1, 1, 16, 16), steps=0)
+        assert False, "expected ValueError for steps=0"
+    except ValueError:
+        pass

@@ -11,11 +11,12 @@ base config is loaded once and each variant is an explicit, logged override
 of it -- the resolved config for every run is saved next to its checkpoint
 (scripts/train.py already does this via config_resolved.yaml), so which
 variant used which settings is no longer reconstructed after the fact.
+"wo_denoising" scales L_diff by loss.denoising_weight=0.0, a config knob
+scripts/train.py's _train_proposed actually reads (not a no-op override).
 
-NOTE: this trains 4 separate models (denoising loss can't be ablated
-zero-cost the way an eval-time metric can) -- there's no way to avoid that
-compute cost. What this script removes is the *ambiguity* about what was
-run, not the training time itself.
+NOTE: this trains 4 separate models (each ablation is a genuinely different
+training run) -- there's no way to avoid that compute cost. What this script
+removes is the *ambiguity* about what was run, not the training time itself.
 """
 from __future__ import annotations
 
@@ -30,10 +31,10 @@ VARIANTS = {
     "full": {},
     "wo_physics": {"loss": {"physics_weight": 0.0}},
     "wo_perceptual": {"loss": {"perceptual": {"enabled": False}}},
-    # "wo_denoising" has no config knob -- it requires an actual code path
-    # that skips the diffusion loss term, which is a genuine architecture
-    # change, not a hyperparameter toggle. Flagged rather than faked with a
-    # config override that wouldn't actually do anything.
+    # scripts/train.py now reads loss.denoising_weight (default 1.0) and
+    # scales L_diff by it, so this is a genuine code path (the eps-prediction
+    # loss term is dropped from the optimized objective), not a no-op override.
+    "wo_denoising": {"loss": {"denoising_weight": 0.0}},
 }
 
 
@@ -51,8 +52,7 @@ def main():
 
     for name in args.variants:
         if name not in VARIANTS:
-            print(f"SKIP {name}: no config-level override defined (see wo_denoising note above); "
-                  "implement a --skip_denoising_loss code path in scripts/train.py before running it.")
+            print(f"SKIP {name}: not one of the defined variants ({', '.join(VARIANTS)}).")
             continue
 
         variant_cfg = OmegaConf.merge(base_cfg, VARIANTS[name])

@@ -72,4 +72,10 @@ class LoDoPaBDataset(Dataset):
         x_t = torch.from_numpy(x_arr).float().unsqueeze(0)  # (1,H,W)
         x_t = x_t * 2.0 - 1.0
         y_t = torch.from_numpy(np.asarray(y)).float()  # (angles,det)
-        return {"x": x_t, "y": y_t}
+        # LoDoPaB-CT's own convention: ground-truth images and the released
+        # sinograms both live on the fixed [0,1] attenuation scale (Leuschner
+        # et al. 2021) -- so x_min/x_max for the physics-loss rescale
+        # (src/ct/units.py) are dataset-wide constants, not per-slice.
+        x_min = torch.tensor(0.0)
+        x_max = torch.tensor(1.0)
+        return {"x": x_t, "y": y_t, "x_min": x_min, "x_max": x_max}

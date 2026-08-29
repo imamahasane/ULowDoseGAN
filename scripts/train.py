@@ -7,8 +7,14 @@ denoisers taking c = A*(y) as input (the same conditioning quantity the
 proposed method uses, for an apples-to-apples comparison rather than
 whatever each baseline's own released code happens to assume). `--model
 dugan` additionally trains the dual discriminators. `--model corediff` trains
-the bridge-style generalized-diffusion baseline. See src/models/baselines/
-for fidelity caveats on each reimplementation.
+the bridge-style generalized-diffusion baseline. `--model dps_prior` trains
+the unconditional diffusion prior used by DPS (Sec. "Head-to-head comparison
+with inference-time physics correction"): same UNet width/depth as `proposed`
+but with no c conditioning and no physics loss; the physics correction is
+applied only at evaluation time (see scripts/evaluate.py --model dps).
+FBP needs no training and is not listed here -- it is a closed-form baseline
+handled entirely in scripts/evaluate.py. See src/models/baselines/ for
+fidelity caveats on each reimplementation.
 """
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ from src.data.lodopab import LoDoPaBDataset
 from src.data.mayo_aapm import MayoAAPMDataset
 from src.data.transforms import AugmentConfig, random_augment
 from src.diffusion.ddpm import PhysicsConditionedDDPM
+from src.diffusion.dps import UnconditionalDDPM
 from src.diffusion.schedule import make_ddpm_schedule
 from src.losses.perceptual import VGGPerceptualLoss
 from src.losses.physics import PhysicsConsistencyLoss
@@ -39,7 +46,7 @@ from src.utils.io import ensure_dir, git_commit_hash, save_yaml
 from src.utils.logging import make_tb_writer, setup_logger
 from src.utils.seed import seed_everything, worker_init_fn
 
-BASELINE_MODELS = ("redcnn", "hformer", "ascon", "dugan", "corediff")
+BASELINE_MODELS = ("redcnn", "hformer", "ascon", "dugan", "corediff", "dps_prior")
 ALL_MODELS = ("proposed",) + BASELINE_MODELS
 
 
@@ -110,6 +117,8 @@ def main():
 
     if args.model == "proposed":
         _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, logger, writer, cfg_meta, aug_cfg, grad_accum, max_epochs)
+    elif args.model == "dps_prior":
+        _train_dps_prior(cfg, device, dl_train, dl_val, ckpt_dir, logger, writer, cfg_meta, aug_cfg, grad_accum, max_epochs, int(H))
     elif args.model == "dugan":
         _train_dugan(cfg, device, projector, dl_train, dl_val, ckpt_dir, logger, writer, cfg_meta, aug_cfg, grad_accum, max_epochs, int(H))
     elif args.model == "ascon":
@@ -160,6 +169,10 @@ def _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, lo
     T = int(cfg.diffusion.T)
     physics_w = float(cfg.loss.physics_weight)
     perc_w = float(cfg.loss.perceptual.weight)
+    # 0.0 realizes the "w/o denoising loss" ablation (Table: loss-term
+    # ablation) as an actual code path rather than a no-op config override --
+    # see the note in scripts/run_ablation.py this replaces.
+    denoising_w = float(cfg.loss.get("denoising_weight", 1.0))
     best_val = float("inf")
     epochs_no_improve = 0
 
@@ -170,6 +183,8 @@ def _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, lo
             for batch in tqdm(dl_val, desc=f"val {epoch}", leave=False):
                 x0 = batch["x"].to(device)
                 y = batch["y"].to(device)
+                x_min = batch["x_min"].to(device)
+                x_max = batch["x_max"].to(device)
                 if y.ndim == 2:
                     y = y.unsqueeze(0)
                 c = projector.AT(y)
@@ -177,7 +192,7 @@ def _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, lo
                 eps = torch.randn_like(x0)
                 x_t = ddpm.q_sample(x0, t, eps)
                 out = ddpm.predict_eps_and_x0(x_t, c, t)
-                loss = F.mse_loss(out.eps_pred, eps) + physics_w * phys_loss_fn(projector, out.x0_pred, y)
+                loss = denoising_w * F.mse_loss(out.eps_pred, eps) + physics_w * phys_loss_fn(projector, out.x0_pred, y, x_min, x_max)
                 if perceptual is not None:
                     loss = loss + perc_w * perceptual(out.x0_pred, x0)
                 losses.append(loss.item())
@@ -192,6 +207,8 @@ def _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, lo
         for step, batch in enumerate(pbar):
             x0 = batch["x"].to(device)
             y = batch["y"].to(device)
+            x_min = batch["x_min"].to(device)
+            x_max = batch["x_max"].to(device)
             if y.ndim == 2:
                 y = y.unsqueeze(0)
             x0_aug = random_augment(x0, aug_cfg)
@@ -202,8 +219,8 @@ def _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, lo
 
             with torch.cuda.amp.autocast(enabled=bool(cfg.train.amp)):
                 out = ddpm.predict_eps_and_x0(x_t, c, t)
-                loss_diff = F.mse_loss(out.eps_pred, eps)
-                loss_phys = phys_loss_fn(projector, out.x0_pred, y)
+                loss_diff = denoising_w * F.mse_loss(out.eps_pred, eps)
+                loss_phys = phys_loss_fn(projector, out.x0_pred, y, x_min, x_max)
                 loss = loss_diff + physics_w * loss_phys
                 if perceptual is not None:
                     loss = loss + perc_w * perceptual(out.x0_pred, x0_aug)
@@ -227,6 +244,87 @@ def _train_proposed(cfg, args, device, projector, dl_train, dl_val, ckpt_dir, lo
                 epochs_no_improve += 1
             if epochs_no_improve >= int(cfg.optim.early_stop_patience):
                 logger.info(f"Early stopping at epoch {epoch}.")
+                break
+
+
+def _train_dps_prior(cfg, device, dl_train, dl_val, ckpt_dir, logger, writer, cfg_meta, aug_cfg, grad_accum, max_epochs, image_size):
+    """The DPS prior (Sec. "Head-to-head comparison with inference-time
+    physics correction"): an UNconditional DDPM, same width/depth/attention
+    as the proposed method's UNet (matched capacity) but with in_channels=1
+    (no c = A*(y) concatenation) and trained with the plain denoising loss
+    only -- no physics-consistency loss, no measurement conditioning. Physics
+    is reintroduced only at evaluation time via scripts/evaluate.py's DPS
+    sampler (src/diffusion/dps.py)."""
+    schedule = make_ddpm_schedule(
+        T=int(cfg.diffusion.T), beta_schedule=str(cfg.diffusion.beta_schedule),
+        beta_start=float(cfg.diffusion.beta_start), beta_end=float(cfg.diffusion.beta_end), device=device,
+    )
+    unet_cfg = UNetConfig(
+        in_channels=1, out_channels=int(cfg.model.out_channels),
+        base_channels=int(cfg.model.base_channels), channel_mult=tuple(cfg.model.channel_mult),
+        num_res_blocks=int(cfg.model.num_res_blocks), attention_resolutions=tuple(cfg.model.attention_resolutions),
+        num_heads=int(cfg.model.num_heads), dropout=float(cfg.model.dropout),
+    )
+    denoiser = UNetModel(unet_cfg, image_size=image_size).to(device)
+    model = UnconditionalDDPM(denoiser, schedule).to(device)
+
+    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.optim.lr), betas=tuple(cfg.optim.betas), weight_decay=float(cfg.optim.weight_decay))
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode=str(cfg.optim.scheduler.mode), factor=float(cfg.optim.scheduler.factor), patience=int(cfg.optim.scheduler.patience), min_lr=float(cfg.optim.scheduler.min_lr))
+    scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.train.amp))
+
+    T = int(cfg.diffusion.T)
+    best_val = float("inf")
+    epochs_no_improve = 0
+
+    def run_val(epoch: int) -> float:
+        model.eval()
+        losses = []
+        with torch.no_grad():
+            for batch in tqdm(dl_val, desc=f"val[dps_prior] {epoch}", leave=False):
+                x0 = batch["x"].to(device)
+                t = torch.randint(0, T, (x0.shape[0],), device=device, dtype=torch.long)
+                eps = torch.randn_like(x0)
+                x_t = model.q_sample(x0, t, eps)
+                out = model.predict_eps_and_x0(x_t, t)
+                losses.append(F.mse_loss(out.eps_pred, eps).item())
+        model.train()
+        return float(sum(losses) / max(1, len(losses)))
+
+    for epoch in range(max_epochs):
+        model.train()
+        opt.zero_grad(set_to_none=True)
+        pbar = tqdm(dl_train, desc=f"train[dps_prior] {epoch}")
+        step = 0
+        for step, batch in enumerate(pbar):
+            x0 = batch["x"].to(device)
+            x0_aug = random_augment(x0, aug_cfg)
+            t = torch.randint(0, T, (x0.shape[0],), device=device, dtype=torch.long)
+            eps = torch.randn_like(x0_aug)
+            x_t = model.q_sample(x0_aug, t, eps)
+
+            with torch.cuda.amp.autocast(enabled=bool(cfg.train.amp)):
+                out = model.predict_eps_and_x0(x_t, t)
+                loss = F.mse_loss(out.eps_pred, eps)
+
+            scaler.scale(loss / grad_accum).backward()
+            _flush_grad_accum(scaler, opt, step, grad_accum)
+            pbar.set_postfix({"L": f"{loss.item():.4f}"})
+
+        _flush_grad_accum(scaler, opt, step, grad_accum, force=True)
+
+        if (epoch + 1) % int(cfg.train.val_every_epochs) == 0:
+            val_loss = run_val(epoch)
+            writer.add_scalar("val/loss", val_loss, epoch)
+            logger.info(f"[dps_prior] epoch {epoch}: val_loss={val_loss:.6f}")
+            sched.step(val_loss)
+            if val_loss < best_val:
+                best_val = val_loss
+                epochs_no_improve = 0
+                torch.save({"model": model.state_dict(), "epoch": epoch, "best_val": best_val, "config": cfg_meta}, ckpt_dir / "best.pt")
+            else:
+                epochs_no_improve += 1
+            if epochs_no_improve >= int(cfg.optim.early_stop_patience):
+                logger.info(f"[dps_prior] Early stopping at epoch {epoch}.")
                 break
 
 
